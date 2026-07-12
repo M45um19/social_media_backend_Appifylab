@@ -8,11 +8,42 @@ export const kafka = new Kafka({
   brokers,
 });
 
+export const waitForKafka = async (retries = 10, delayMs = 3000): Promise<boolean> => {
+  const admin = kafka.admin();
+  for (let i = 0; i < retries; i++) {
+    try {
+      await admin.connect();
+      await admin.disconnect();
+      return true;
+    } catch (err: any) {
+      console.log(`Waiting for Kafka connection readiness... (Attempt ${i + 1}/${retries}). Error: ${err.message}`);
+      if (i < retries - 1) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+  }
+  return false;
+};
+
 let producer: Producer | null = null;
 
 export const connectProducer = async (): Promise<Producer> => {
   if (producer) return producer;
   
+  const isReady = await waitForKafka(5, 3000);
+  if (!isReady) {
+    console.warn("Kafka was not ready. Starting producer in fallback/disabled mock mode.");
+    producer = {
+      connect: async () => {},
+      disconnect: async () => {},
+      send: async (record: any) => {
+        console.log(`[MOCK KAFKA PRODUCER] Publish to ${record.topic}:`, JSON.stringify(record.messages));
+        return [];
+      },
+    } as unknown as Producer;
+    return producer;
+  }
+
   const actualProducer = kafka.producer();
   try {
     await actualProducer.connect();

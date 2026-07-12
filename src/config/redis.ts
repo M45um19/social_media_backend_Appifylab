@@ -64,6 +64,103 @@ export const connectRedis = async (): Promise<RedisClientType> => {
       del: async (key: string) => {
         return store.delete(key) ? 1 : 0;
       },
+      hSet: async (key: string, field: any, value?: any) => {
+        let data: Record<string, string> = {};
+        const item = store.get(key);
+        if (item) {
+          try {
+            data = JSON.parse(item.value);
+          } catch {}
+        }
+        
+        if (typeof field === "object" && field !== null) {
+          Object.assign(data, field);
+        } else {
+          data[field] = value;
+        }
+
+        store.set(key, { value: JSON.stringify(data), expireAt: item?.expireAt });
+        return 1;
+      },
+      hGet: async (key: string, field: string) => {
+        const item = store.get(key);
+        if (!item) return null;
+        if (item.expireAt && Date.now() > item.expireAt) {
+          store.delete(key);
+          return null;
+        }
+        try {
+          const data = JSON.parse(item.value);
+          return data[field] || null;
+        } catch {
+          return null;
+        }
+      },
+      hGetAll: async (key: string) => {
+        const item = store.get(key);
+        if (!item) return {};
+        if (item.expireAt && Date.now() > item.expireAt) {
+          store.delete(key);
+          return {};
+        }
+        try {
+          return JSON.parse(item.value);
+        } catch {
+          return {};
+        }
+      },
+      hDel: async (key: string, fields: string | string[]) => {
+        const item = store.get(key);
+        if (!item) return 0;
+        try {
+          const data = JSON.parse(item.value);
+          let deletedCount = 0;
+          const fieldsArray = Array.isArray(fields) ? fields : [fields];
+          for (const f of fieldsArray) {
+            if (f in data) {
+              delete data[f];
+              deletedCount++;
+            }
+          }
+          store.set(key, { value: JSON.stringify(data), expireAt: item.expireAt });
+          return deletedCount;
+        } catch {
+          return 0;
+        }
+      },
+      expire: async (key: string, seconds: number) => {
+        const item = store.get(key);
+        if (item) {
+          item.expireAt = Date.now() + seconds * 1000;
+          return true;
+        }
+        return false;
+      },
+      multi: () => {
+        const chain: Array<() => Promise<any>> = [];
+        const builder = {
+          hSet: (key: string, field: any, value?: any) => {
+            chain.push(() => redisClient!.hSet(key, field, value));
+            return builder;
+          },
+          expire: (key: string, seconds: number) => {
+            chain.push(() => redisClient!.expire(key, seconds));
+            return builder;
+          },
+          hDel: (key: string, fields: string | string[]) => {
+            chain.push(() => redisClient!.hDel(key, fields));
+            return builder;
+          },
+          exec: async () => {
+            const results = [];
+            for (const fn of chain) {
+              results.push(await fn());
+            }
+            return results;
+          }
+        };
+        return builder;
+      },
       on: () => {},
     } as unknown as RedisClientType;
   }

@@ -7,10 +7,10 @@ export const AUTH_CONSTANTS = {
   },
   REDIS: {
     CACHE_KEYS: {
-      USER_DEVICES: (userId: string) => `auth:devices:${userId}`,
+      USER_DATA: (userId: string) => `user:${userId}:data`,
     },
     TTL: {
-      USER_DEVICES: 7 * 24 * 3600, // 7 days
+      USER_DATA: 7 * 24 * 3600, // 7 days
     },
   },
 };

@@ -24,10 +24,9 @@ The codebase enforces a strict Controller-Service-Repository pattern and isolate
 
 ### 1. Redis Caching System (Why & Where)
 
-- **Why**: Redis provides ultra-fast in-memory lookup capabilities, minimizing the database read-traffic on MongoDB, maintaining transient state tracking, and securing refresh token metadata with native TTL expiry.
+- **Why**: Redis provides ultra-fast in-memory lookup capabilities, minimizing authentication validation latency, tracking active client sessions/devices, and securing refresh token metadata with native TTL expiry.
 - **Where**:
-  - **User Profile Cache (`auth:user:<userId>`)**: Implemented as a **Cache-Aside** mechanism inside `auth.service.ts`. Successful updates prime the cache for 1 hour. Subsequent queries fetch data straight from Redis, cutting DB operations to zero on read-heavy routes.
-  - **Device Session Cache (`auth:session:<userId>:<deviceId>`)**: Caches active refresh tokens associated with clients, capturing metadata such as `userAgent`, `ip`, and creation timestamps. Sessions expire after a 7-day TTL matching the refresh token lifespan, facilitating instant token revoking.
+  - **User Data Hash (`user:<userId>:data`)**: Stores user profile info in a `profile` field (persisted as a JSON DTO), alongside device session mappings in separate `session:<deviceId>` fields. The key expires after 7 days matching the active session length, providing multi-device session security and preventing concurrent session write race conditions.
 
 ### 2. Kafka Event Streaming (Why & Where)
 
@@ -126,6 +125,87 @@ docker-compose up --build
         "email": "john.doe@example.com",
         "createdAt": "2026-07-12T07:31:10.042Z"
       }
+    }
+  }
+  ```
+
+#### Login User
+- **URL**: `/api/v1/auth/login`
+- **Method**: `POST`
+- **Headers**:
+  - `Content-Type: application/json`
+  - `User-Agent: <client-user-agent>` (Optional)
+- **Body**:
+  ```json
+  {
+    "email": "john.doe@example.com",
+    "password": "StrongPassword123"
+  }
+  ```
+- **Success Response (200 OK)**:
+  ```json
+  {
+    "success": true,
+    "statusCode": 200,
+    "message": "User logged in successfully",
+    "data": {
+      "accessToken": "<access_token_jwt>",
+      "refreshToken": "<refresh_token_jwt>",
+      "deviceId": "<generated_uuid>",
+      "user": {
+        "id": "<user_id>",
+        "firstName": "John",
+        "lastName": "Doe",
+        "email": "john.doe@example.com",
+        "createdAt": "2026-07-12T07:31:10.042Z"
+      }
+  }
+}
+```
+
+#### Logout User
+- **URL**: `/api/v1/auth/logout`
+- **Method**: `POST`
+- **Headers**:
+  - `Content-Type: application/json`
+  - `Authorization: Bearer <access_token_jwt>`
+- **Body**:
+  ```json
+  {
+    "deviceId": "<generated_uuid>"
+  }
+  ```
+- **Success Response (200 OK)**:
+  ```json
+  {
+    "success": true,
+    "statusCode": 200,
+    "message": "Logged out successfully"
+  }
+  ```
+
+#### Refresh Token
+- **URL**: `/api/v1/auth/refresh-token`
+- **Method**: `POST`
+- **Headers**:
+  - `Content-Type: application/json`
+- **Body**:
+  ```json
+  {
+    "refreshToken": "<refresh_token_jwt>",
+    "deviceId": "<generated_uuid>"
+  }
+  ```
+- **Success Response (200 OK)**:
+  ```json
+  {
+    "success": true,
+    "statusCode": 200,
+    "message": "Tokens refreshed successfully",
+    "data": {
+      "accessToken": "<new_access_token_jwt>",
+      "refreshToken": "<new_refresh_token_jwt>",
+      "deviceId": "<generated_uuid>"
     }
   }
   ```

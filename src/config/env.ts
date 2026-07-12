@@ -5,20 +5,20 @@ import { z } from "zod";
 dotenv.config();
 
 const envSchema = z.object({
-  PORT: z.coerce.number().default(5000),
-  NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
+  PORT: z.coerce.number(),
+  NODE_ENV: z.enum(["development", "production", "test"]),
   MONGO_URI: z.string(),
   REDIS_URL: z.string().optional(),
   KAFKA_BROKERS: z.string().optional(),
-  KAFKA_CLIENT_ID: z.string().default("social-media-app"),
+  KAFKA_CLIENT_ID: z.string(),
   JWT_ACCESS_SECRET: z.string(),
   JWT_REFRESH_SECRET: z.string(),
-  JWT_ACCESS_EXPIRES_IN: z.string().default("15m"),
-  JWT_REFRESH_EXPIRES_IN: z.string().default("7d"),
-  EMAIL_HOST: z.string().default("smtp.gmail.com"),
-  EMAIL_PORT: z.coerce.number().default(587),
-  EMAIL_USER: z.string().default("mernwarrior007@gmail.com"),
-  EMAIL_PASS: z.string().default("byrn zwps mfgh qoiu"),
+  JWT_ACCESS_EXPIRES_IN: z.string(),
+  JWT_REFRESH_EXPIRES_IN: z.string(),
+  EMAIL_HOST: z.string(),
+  EMAIL_PORT: z.coerce.number(),
+  EMAIL_USER: z.string(),
+  EMAIL_PASS: z.string(),
 });
 
 const parsed = envSchema.safeParse(process.env);

@@ -1,8 +1,17 @@
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
+import bcrypt from "bcryptjs";
 import { authRepository } from "./auth.repository.js";
 import { authEvents } from "./auth.events.js";
-import { IRegisterInput, IAuthResponse, IUserResponseDTO, IDeviceInfo } from "./auth.interface.js";
+import { 
+  IRegisterInput, 
+  ILoginInput, 
+  IAuthResponse, 
+  IUserResponseDTO, 
+  IDeviceInfo,
+  IRefreshTokenInput,
+  IRefreshTokenResponse
+} from "./auth.interface.js";
 import { AppError } from "../../utils/appError.js";
 import { env } from "../../config/env.js";
 import { getRedisClient } from "../../config/redis.js";
@@ -46,10 +55,10 @@ export class AuthService {
       { expiresIn: env.JWT_REFRESH_EXPIRES_IN } as jwt.SignOptions
     );
 
-    // 5. Save device session in Redis under USER_DEVICES array key with 7-day TTL
+    // 5. Save device session in Redis under USER_DATA Hash key with 7-day TTL
     try {
       const redis = getRedisClient();
-      const devicesKey = AUTH_CONSTANTS.REDIS.CACHE_KEYS.USER_DEVICES(userDto.id);
+      const userKey = AUTH_CONSTANTS.REDIS.CACHE_KEYS.USER_DATA(userDto.id);
 
       const deviceSession = {
         deviceId,
@@ -59,16 +68,93 @@ export class AuthService {
         createdAt: new Date().toISOString(),
       };
 
-      await redis.set(devicesKey, JSON.stringify([deviceSession]), {
-        EX: AUTH_CONSTANTS.REDIS.TTL.USER_DEVICES,
+      // Atomic HSET: Set user profile and this specific device session field
+      await redis.hSet(userKey, {
+        profile: JSON.stringify(userDto),
+        [`session:${deviceId}`]: JSON.stringify(deviceSession),
       });
-      console.log(`Saved device session to Redis under user devices key: ${devicesKey}`);
+
+      // Set key TTL to 7 days
+      await redis.expire(userKey, AUTH_CONSTANTS.REDIS.TTL.USER_DATA);
+      console.log(`Saved user profile and device session to Redis under key: ${userKey}`);
     } catch (redisError) {
       console.warn("Failed to save device session in Redis:", redisError);
     }
 
     // 6. Dispatch asynchronous Kafka event
     await authEvents.emitUserRegistered(userDto);
+
+    return {
+      accessToken,
+      refreshToken,
+      deviceId,
+      user: userDto,
+    };
+  }
+
+  public async login(input: ILoginInput, deviceInfo: IDeviceInfo = {}): Promise<IAuthResponse> {
+    // 1. Fetch user by email including the password field (due to select: false)
+    const user = await authRepository.findByEmailWithPassword(input.email);
+    if (!user || !user.password) {
+      throw new AppError("Invalid email or password", 401);
+    }
+
+    // 2. Verify password
+    const isPasswordMatch = await bcrypt.compare(input.password || "", user.password);
+    if (!isPasswordMatch) {
+      throw new AppError("Invalid email or password", 401);
+    }
+
+    // 3. Prepare User Response DTO
+    const userDto: IUserResponseDTO = {
+      id: user._id.toString(),
+      firstName: user.firstName,
+      lastName: user.lastName,
+      email: user.email,
+      createdAt: user.createdAt,
+    };
+
+    // Generate unique device ID
+    const deviceId = crypto.randomUUID();
+
+    // 4. Generate Access and Refresh JWT Tokens
+    const accessToken = jwt.sign(
+      { id: userDto.id, email: userDto.email },
+      env.JWT_ACCESS_SECRET,
+      { expiresIn: env.JWT_ACCESS_EXPIRES_IN } as jwt.SignOptions
+    );
+
+    const refreshToken = jwt.sign(
+      { id: userDto.id, email: userDto.email },
+      env.JWT_REFRESH_SECRET,
+      { expiresIn: env.JWT_REFRESH_EXPIRES_IN } as jwt.SignOptions
+    );
+
+    // 5. Save device session in Redis under USER_DATA Hash key with 7-day TTL
+    try {
+      const redis = getRedisClient();
+      const userKey = AUTH_CONSTANTS.REDIS.CACHE_KEYS.USER_DATA(userDto.id);
+
+      const deviceSession = {
+        deviceId,
+        refreshToken,
+        userAgent: deviceInfo.userAgent || "unknown",
+        ip: deviceInfo.ip || "unknown",
+        createdAt: new Date().toISOString(),
+      };
+
+      // Atomic HSET: Set user profile and this specific device session field
+      await redis.hSet(userKey, {
+        profile: JSON.stringify(userDto),
+        [`session:${deviceId}`]: JSON.stringify(deviceSession),
+      });
+
+      // Set key TTL to 7 days
+      await redis.expire(userKey, AUTH_CONSTANTS.REDIS.TTL.USER_DATA);
+      console.log(`Saved user profile and device session to Redis under key: ${userKey}`);
+    } catch (redisError) {
+      console.warn("Failed to save device session in Redis:", redisError);
+    }
 
     return {
       accessToken,
@@ -92,6 +178,107 @@ export class AuthService {
     } catch (error) {
       console.error(`Failed to send welcome email to ${user.email}:`, error);
     }
+  }
+
+  public async logout(userId: string, deviceId: string): Promise<void> {
+    try {
+      const redis = getRedisClient();
+      const userKey = AUTH_CONSTANTS.REDIS.CACHE_KEYS.USER_DATA(userId);
+      const sessionField = `session:${deviceId}`;
+
+      // Atomic HDEL to log out the specific device
+      await redis.hDel(userKey, sessionField);
+      console.log(`Successfully logged out device: ${sessionField} for user: ${userId}`);
+    } catch (redisError: any) {
+      console.warn("Failed to log out device in Redis:", redisError);
+      throw new AppError("Failed to log out device session", 500);
+    }
+  }
+
+  public async refreshToken(input: IRefreshTokenInput, deviceInfo: IDeviceInfo = {}): Promise<IRefreshTokenResponse> {
+    const { refreshToken: clientToken, deviceId } = input;
+
+    // 1. Verify the client refresh token using JWT_REFRESH_SECRET
+    let decoded: any;
+    try {
+      decoded = jwt.verify(clientToken, env.JWT_REFRESH_SECRET);
+    } catch (err: any) {
+      // Proactively clear the session from Redis if the token is invalid/expired
+      try {
+        const payload = jwt.decode(clientToken) as any;
+        if (payload && payload.id) {
+          const redis = getRedisClient();
+          const userKey = AUTH_CONSTANTS.REDIS.CACHE_KEYS.USER_DATA(payload.id);
+          await redis.hDel(userKey, `session:${deviceId}`);
+          console.warn(`Removed session:${deviceId} for user:${payload.id} due to verification error.`);
+        }
+      } catch {}
+      throw new AppError("Invalid or expired refresh token", 401);
+    }
+
+    const userId = decoded.id;
+    const email = decoded.email;
+
+    // 2. Fetch session data from Redis using HGET
+    const redis = getRedisClient();
+    const userKey = AUTH_CONSTANTS.REDIS.CACHE_KEYS.USER_DATA(userId);
+    const sessionField = `session:${deviceId}`;
+
+    const sessionDataStr = await redis.hGet(userKey, sessionField);
+    if (!sessionDataStr) {
+      throw new AppError("Session not found or expired", 401);
+    }
+
+    let sessionData: any;
+    try {
+      sessionData = JSON.parse(sessionDataStr);
+    } catch {
+      await redis.hDel(userKey, sessionField);
+      throw new AppError("Session corrupted", 401);
+    }
+
+    // 3. Check if the provided refreshToken matches the one stored in Redis
+    if (sessionData.refreshToken !== clientToken) {
+      // Refresh token reuse or mismatch detected! Log out the device by removing the session.
+      await redis.hDel(userKey, sessionField);
+      console.warn(`Potential token theft: Refresh token mismatch detected for user: ${userId}, device: ${deviceId}. Session cleared.`);
+      throw new AppError("Refresh token mismatch or potential reuse detected", 401);
+    }
+
+    // 4. Perform Refresh Token Rotation
+    // Generate new access and refresh tokens
+    const newAccessToken = jwt.sign(
+      { id: userId, email },
+      env.JWT_ACCESS_SECRET,
+      { expiresIn: env.JWT_ACCESS_EXPIRES_IN } as jwt.SignOptions
+    );
+
+    const newRefreshToken = jwt.sign(
+      { id: userId, email },
+      env.JWT_REFRESH_SECRET,
+      { expiresIn: env.JWT_REFRESH_EXPIRES_IN } as jwt.SignOptions
+    );
+
+    // 5. Update the Redis Hash field
+    const updatedSession = {
+      ...sessionData,
+      refreshToken: newRefreshToken,
+      userAgent: deviceInfo.userAgent || sessionData.userAgent || "unknown",
+      ip: deviceInfo.ip || sessionData.ip || "unknown",
+      createdAt: new Date().toISOString(),
+    };
+
+    // Atomic multi transaction to update session and extend key TTL in one command
+    await redis.multi()
+      .hSet(userKey, sessionField, JSON.stringify(updatedSession))
+      .expire(userKey, AUTH_CONSTANTS.REDIS.TTL.USER_DATA)
+      .exec();
+
+    return {
+      accessToken: newAccessToken,
+      refreshToken: newRefreshToken,
+      deviceId,
+    };
   }
 }
 

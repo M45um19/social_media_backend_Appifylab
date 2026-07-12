@@ -20,6 +20,11 @@ export interface IRegisterInput {
   password?: string;
 }
 
+export interface ILoginInput {
+  email: string;
+  password?: string;
+}
+
 export interface IUserResponseDTO {
   id: string;
   firstName: string;
@@ -38,4 +43,15 @@ export interface IAuthResponse {
   refreshToken: string;
   deviceId: string;
   user: IUserResponseDTO;
+}
+
+export interface IRefreshTokenInput {
+  refreshToken: string;
+  deviceId: string;
+}
+
+export interface IRefreshTokenResponse {
+  accessToken: string;
+  refreshToken: string;
+  deviceId: string;
 }

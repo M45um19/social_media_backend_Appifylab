@@ -1,4 +1,4 @@
-import { kafka } from "../config/kafka.js";
+import { kafka, waitForKafka } from "../config/kafka.js";
 import { startAuthConsumer } from "./auth.consumer.js";
 import { AUTH_CONSTANTS } from "../modules/auth/auth.constants.js";
 
@@ -31,6 +31,14 @@ export const ensureTopicsExist = async (topics: string[]): Promise<void> => {
 
 export const startConsumers = async (): Promise<void> => {
   try {
+    console.log("Waiting for Kafka connection readiness...");
+    const isReady = await waitForKafka(10, 3000);
+    if (!isReady) {
+      console.warn("Kafka was not ready after retries. Starting consumers in fallback/disabled mode.");
+    } else {
+      console.log("Kafka connection ready. Initializing topics and consumers.");
+    }
+
     console.log("Ensuring required Kafka topics exist...");
     await ensureTopicsExist([AUTH_CONSTANTS.KAFKA.TOPICS.USER_REGISTERED]);
 

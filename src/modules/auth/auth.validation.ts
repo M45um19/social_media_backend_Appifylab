@@ -18,3 +18,39 @@ export const registerSchema = z.object({
 });
 
 export type RegisterSchemaType = z.infer<typeof registerSchema>;
+
+export const loginSchema = z.object({
+  body: z.object({
+    email: z.string({
+      message: "Email is required",
+    }).email("Invalid email format"),
+    password: z.string({
+      message: "Password is required",
+    }).min(1, "Password cannot be empty"),
+  }),
+});
+
+export type LoginSchemaType = z.infer<typeof loginSchema>;
+
+export const logoutSchema = z.object({
+  body: z.object({
+    deviceId: z.string({
+      message: "Device ID is required",
+    }).uuid("Invalid Device ID format"),
+  }),
+});
+
+export type LogoutSchemaType = z.infer<typeof logoutSchema>;
+
+export const refreshTokenSchema = z.object({
+  body: z.object({
+    refreshToken: z.string({
+      message: "Refresh token is required",
+    }),
+    deviceId: z.string({
+      message: "Device ID is required",
+    }).uuid("Invalid Device ID format"),
+  }),
+});
+
+export type RefreshTokenSchemaType = z.infer<typeof refreshTokenSchema>;
