@@ -1,0 +1,41 @@
+import { Kafka, Producer } from "kafkajs";
+import { env } from "./env.js";
+
+const brokers = env.KAFKA_BROKERS ? env.KAFKA_BROKERS.split(",") : ["127.0.0.1:9092"];
+
+export const kafka = new Kafka({
+  clientId: env.KAFKA_CLIENT_ID,
+  brokers,
+});
+
+let producer: Producer | null = null;
+
+export const connectProducer = async (): Promise<Producer> => {
+  if (producer) return producer;
+  
+  const actualProducer = kafka.producer();
+  try {
+    await actualProducer.connect();
+    producer = actualProducer;
+    console.log("Kafka Producer Connected");
+  } catch (error) {
+    console.warn("Kafka Producer connection failed. Event publishing will be mocked/disabled.");
+    // Create a mock producer so the application doesn't crash on outbound events if Kafka is down
+    producer = {
+      connect: async () => {},
+      disconnect: async () => {},
+      send: async (record: any) => {
+        console.log(`[MOCK KAFKA PRODUCER] Publish to ${record.topic}:`, JSON.stringify(record.messages));
+        return [];
+      },
+    } as unknown as Producer;
+  }
+  return producer;
+};
+
+export const getProducer = (): Producer => {
+  if (!producer) {
+    throw new Error("Kafka producer not initialized. Call connectProducer() first.");
+  }
+  return producer;
+};
