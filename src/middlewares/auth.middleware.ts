@@ -21,11 +21,10 @@ export const authenticate = catchAsync(
 
     try {
       const decoded = jwt.verify(token, env.JWT_ACCESS_SECRET) as IDecodedToken;
-      
+
       req.user = {
         id: decoded.id,
         email: decoded.email,
-        role: decoded.role,
       };
 
       next();
@@ -34,12 +33,3 @@ export const authenticate = catchAsync(
     }
   }
 );
-
-export const authorize = (...roles: string[]) => {
-  return (req: Request, res: Response, next: NextFunction) => {
-    if (!req.user || (req.user.role && !roles.includes(req.user.role))) {
-      return next(new AppError("You do not have permission to perform this action", 403));
-    }
-    next();
-  };
-};

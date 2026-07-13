@@ -8,13 +8,13 @@
  */
 export const getWelcomeEmailTemplate = (firstName: string, lastName: string): string => {
   const fullName = `${firstName} ${lastName}`;
-  
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Welcome to Social Media App</title>
+  <title>Welcome to Buddy Script Social Media App</title>
   <style>
     body {
       margin: 0;
@@ -107,7 +107,7 @@ export const getWelcomeEmailTemplate = (firstName: string, lastName: string): st
   <div class="wrapper">
     <div class="main-container">
       <div class="header">
-        <h1>Welcome to Social Media App</h1>
+        <h1>Welcome to Buddy Script Social Media App</h1>
         <p>Your journey to connecting and sharing starts here</p>
       </div>
       <div class="content">
@@ -127,7 +127,7 @@ export const getWelcomeEmailTemplate = (firstName: string, lastName: string): st
         </p>
       </div>
       <div class="footer">
-        <p style="margin: 0 0 8px 0;">&copy; ${new Date().getFullYear()} Social Media App. All rights reserved.</p>
+        <p style="margin: 0 0 8px 0;">&copy; ${new Date().getFullYear()} Buddy Script Social Media App. All rights reserved.</p>
         <p style="margin: 0;">You received this email because you registered on our platform. <a href="#">Unsubscribe</a></p>
       </div>
     </div>

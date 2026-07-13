@@ -19,6 +19,9 @@ const envSchema = z.object({
   EMAIL_PORT: z.coerce.number(),
   EMAIL_USER: z.string(),
   EMAIL_PASS: z.string(),
+  CLOUDINARY_CLOUD_NAME: z.string(),
+  CLOUDINARY_API_KEY: z.string(),
+  CLOUDINARY_API_SECRET: z.string(),
 });
 
 const parsed = envSchema.safeParse(process.env);

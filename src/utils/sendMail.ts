@@ -25,7 +25,7 @@ const transporter = nodemailer.createTransport({
  */
 export const sendMail = async (options: SendMailOptions): Promise<void> => {
   const mailOptions = {
-    from: `"Social Media App" <${env.EMAIL_USER}>`,
+    from: `"Buddy ScriptSocial Media App" <${env.EMAIL_USER}>`,
     to: options.email,
     subject: options.subject,
     text: options.message,
