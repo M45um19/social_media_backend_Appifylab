@@ -57,7 +57,12 @@ export class AuthService {
 
     // 4. Generate Access and Refresh JWT Tokens
     const accessToken = jwt.sign(
-      { id: userDto.id, email: userDto.email },
+      {
+        id: userDto.id,
+        email: userDto.email,
+        firstName: userDto.firstName,
+        lastName: userDto.lastName,
+      },
       env.JWT_ACCESS_SECRET,
       { expiresIn: env.JWT_ACCESS_EXPIRES_IN } as jwt.SignOptions
     );
@@ -133,7 +138,12 @@ export class AuthService {
 
     // 4. Generate Access and Refresh JWT Tokens
     const accessToken = jwt.sign(
-      { id: userDto.id, email: userDto.email },
+      {
+        id: userDto.id,
+        email: userDto.email,
+        firstName: userDto.firstName,
+        lastName: userDto.lastName,
+      },
       env.JWT_ACCESS_SECRET,
       { expiresIn: env.JWT_ACCESS_EXPIRES_IN } as jwt.SignOptions
     );
@@ -260,9 +270,34 @@ export class AuthService {
     }
 
     // 4. Perform Refresh Token Rotation
+    // Retrieve user profile to inject firstName and lastName into access token payload
+    let firstName = "";
+    let lastName = "";
+    try {
+      const profileDataStr = await redis.hGet(userKey, "profile");
+      if (profileDataStr) {
+        const profile = JSON.parse(profileDataStr);
+        firstName = profile.firstName;
+        lastName = profile.lastName;
+      }
+    } catch {}
+
+    if (!firstName) {
+      const user = await authRepository.findById(userId);
+      if (user) {
+        firstName = user.firstName;
+        lastName = user.lastName;
+      }
+    }
+
     // Generate new access and refresh tokens
     const newAccessToken = jwt.sign(
-      { id: userId, email },
+      {
+        id: userId,
+        email,
+        firstName,
+        lastName,
+      },
       env.JWT_ACCESS_SECRET,
       { expiresIn: env.JWT_ACCESS_EXPIRES_IN } as jwt.SignOptions
     );

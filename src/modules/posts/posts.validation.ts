@@ -69,3 +69,17 @@ export const getPostsSchema = z.object({
 });
 
 export type GetPostsSchemaType = z.infer<typeof getPostsSchema>;
+
+export const addCommentSchema = z.object({
+  body: z.object({
+    content: z.string({
+      message: "Comment content is required",
+    })
+      .trim()
+      .min(1, "Comment content cannot be empty")
+      .max(1000, "Comment content cannot exceed 1000 characters"),
+    parentId: z.string().optional(),
+  }),
+});
+
+export type AddCommentSchemaType = z.infer<typeof addCommentSchema>;

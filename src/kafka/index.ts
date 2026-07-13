@@ -1,6 +1,8 @@
 import { kafka, waitForKafka } from "../config/kafka.js";
 import { startAuthConsumer } from "./auth.consumer.js";
+import { startPostsConsumer } from "./posts.consumer.js";
 import { AUTH_CONSTANTS } from "../modules/auth/auth.constants.js";
+import { POSTS_CONSTANTS } from "../modules/posts/posts.constants.js";
 
 export const ensureTopicsExist = async (topics: string[]): Promise<void> => {
   const admin = kafka.admin();
@@ -40,10 +42,16 @@ export const startConsumers = async (): Promise<void> => {
     }
 
     console.log("Ensuring required Kafka topics exist...");
-    await ensureTopicsExist([AUTH_CONSTANTS.KAFKA.TOPICS.USER_REGISTERED]);
+    await ensureTopicsExist([
+      AUTH_CONSTANTS.KAFKA.TOPICS.USER_REGISTERED,
+      POSTS_CONSTANTS.KAFKA.TOPICS.POST_CREATED,
+      POSTS_CONSTANTS.KAFKA.TOPICS.POST_LIKED,
+      POSTS_CONSTANTS.KAFKA.TOPICS.POST_COMMENTED,
+    ]);
 
     console.log("Initializing consumer subscriptions...");
     await startAuthConsumer();
+    await startPostsConsumer();
     
     console.log("Kafka Consumers boot orchestration complete");
   } catch (error) {
