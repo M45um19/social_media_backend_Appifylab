@@ -3,6 +3,7 @@ import { env } from "../../config/env.js";
 import { getRedisClient } from "../../config/redis.js";
 import { postsRepository } from "./posts.repository.js";
 import { postsEvents } from "./posts.events.js";
+import { uuidv7 } from "../../utils/uuid.js";
 import { POSTS_CONSTANTS } from "./posts.constants.js";
 import { AppError } from "../../utils/appError.js";
 import { authService } from "../auth/auth.service.js";
@@ -12,6 +13,9 @@ import {
   IGetPostsQuery,
   IPresignedUrlInput,
   IPresignedUrlResponse,
+  IComment,
+  ICreateCommentInput,
+  IPostLiker,
 } from "./posts.interface.js";
 
 export class PostsService {
@@ -117,10 +121,7 @@ export class PostsService {
     return populated[0];
   }
 
-  /**
-   * Retrieves individual post details using the Cache-Aside pattern (Redis Hash -> MongoDB fallback -> Hydrate).
-   */
-  public async getPostDetails(postId: string): Promise<IPost | null> {
+  public async getPostDetails(postId: string, requestingUserId?: string): Promise<IPost | null> {
     const postKey = POSTS_CONSTANTS.REDIS.CACHE_KEYS.POST_DATA(postId);
     const redis = getRedisClient();
 
@@ -131,6 +132,31 @@ export class PostsService {
         // Sliding TTL refresh
         await redis.expire(postKey, POSTS_CONSTANTS.REDIS.TTL.POST_DATA);
 
+        let recentLikers: any[] = [];
+        if (data.recentLikers) {
+          try {
+            recentLikers = JSON.parse(data.recentLikers);
+          } catch {}
+        }
+
+        let recentComment: any = null;
+        if (data.recentComment) {
+          try {
+            recentComment = JSON.parse(data.recentComment);
+          } catch {}
+        }
+
+        let isLiked = false;
+        if (requestingUserId) {
+          const likersKey = POSTS_CONSTANTS.REDIS.CACHE_KEYS.POST_LIKERS(postId);
+          if (await redis.exists(likersKey)) {
+            const memberCheck = await redis.sIsMember(likersKey, requestingUserId) as any;
+            isLiked = memberCheck === 1 || memberCheck === true;
+          } else {
+            isLiked = await postsRepository.hasUserLiked(postId, requestingUserId);
+          }
+        }
+
         return {
           id: data.id,
           userId: data.userId,
@@ -140,6 +166,9 @@ export class PostsService {
           commentsCount: parseInt(data.commentsCount || "0", 10),
           createdAt: new Date(data.createdAt),
           updatedAt: new Date(data.updatedAt),
+          recentLikers,
+          recentComment,
+          isLiked,
         };
       }
     } catch (redisError: any) {
@@ -152,6 +181,57 @@ export class PostsService {
       return null;
     }
 
+    // Fetch recent likes (last 5) and latest comment
+    const [recentLikesDocs, latestCommentDoc] = await Promise.all([
+      postsRepository.findRecentLikes(postId, 5),
+      postsRepository.findLatestComment(postId),
+    ]);
+
+    const likerIds = recentLikesDocs.map((l) => l.userId);
+    const commentAuthorId = latestCommentDoc?.userId;
+    const batchUserIds = Array.from(new Set([
+      ...likerIds,
+      ...(commentAuthorId ? [commentAuthorId] : []),
+    ]));
+
+    let profilesMap = new Map<string, any>();
+    if (batchUserIds.length > 0) {
+      try {
+        const profiles = await authService.getUsersByIds(batchUserIds);
+        profilesMap = new Map(profiles.map((p) => [p.id, p]));
+      } catch (err: any) {
+        console.warn(`Failed to fetch profiles during hydration: ${err.message}`);
+      }
+    }
+
+    const recentLikers = recentLikesDocs.map((l) => {
+      const p = profilesMap.get(l.userId);
+      return {
+        id: l.userId,
+        name: p ? `${p.firstName} ${p.lastName}`.trim() : "Unknown User",
+        pic: p?.profilePicture || "",
+      };
+    });
+
+    let recentComment = null;
+    if (latestCommentDoc) {
+      const p = profilesMap.get(latestCommentDoc.userId);
+      recentComment = {
+        userId: latestCommentDoc.userId,
+        firstName: p ? p.firstName : "Unknown",
+        lastName: p ? p.lastName : "User",
+        profilePicture: p?.profilePicture || "",
+        text: latestCommentDoc.content.length > 100
+          ? latestCommentDoc.content.slice(0, 100) + "..."
+          : latestCommentDoc.content,
+      };
+    }
+
+    let isLiked = false;
+    if (requestingUserId) {
+      isLiked = await postsRepository.hasUserLiked(postId, requestingUserId);
+    }
+
     const postDto: IPost = {
       id: postDoc._id,
       userId: postDoc.userId,
@@ -161,6 +241,9 @@ export class PostsService {
       commentsCount: postDoc.commentsCount,
       createdAt: postDoc.createdAt,
       updatedAt: postDoc.updatedAt,
+      recentLikers,
+      recentComment,
+      isLiked,
     };
 
     // Hydrate cache
@@ -174,6 +257,8 @@ export class PostsService {
         commentsCount: postDto.commentsCount.toString(),
         createdAt: postDto.createdAt.toISOString(),
         updatedAt: postDto.updatedAt.toISOString(),
+        recentLikers: JSON.stringify(postDto.recentLikers || []),
+        recentComment: postDto.recentComment ? JSON.stringify(postDto.recentComment) : "",
       });
       await redis.expire(postKey, POSTS_CONSTANTS.REDIS.TTL.POST_DATA);
     } catch (redisError: any) {
@@ -187,7 +272,8 @@ export class PostsService {
    * Fetches the global feed of posts using ZREVRANGEBYSCORE cursor-based pagination.
    */
   public async getFeed(
-    query: IGetPostsQuery
+    query: IGetPostsQuery,
+    requestingUserId?: string
   ): Promise<{ posts: IPost[]; nextCursor: string | null }> {
     const redis = getRedisClient();
     const feedKey = POSTS_CONSTANTS.REDIS.CACHE_KEYS.GLOBAL_FEED;
@@ -241,6 +327,19 @@ export class PostsService {
       const data = pipelineResults[i] as Record<string, string> | undefined;
 
       if (data && Object.keys(data).length > 0 && data.id) {
+        let recentLikers: any[] = [];
+        if (data.recentLikers) {
+          try {
+            recentLikers = JSON.parse(data.recentLikers);
+          } catch {}
+        }
+        let recentComment: any = null;
+        if (data.recentComment) {
+          try {
+            recentComment = JSON.parse(data.recentComment);
+          } catch {}
+        }
+
         // Cache hit! Parse the details
         postMap.set(postId, {
           id: data.id,
@@ -251,6 +350,8 @@ export class PostsService {
           commentsCount: parseInt(data.commentsCount || "0", 10),
           createdAt: new Date(data.createdAt),
           updatedAt: new Date(data.updatedAt),
+          recentLikers,
+          recentComment,
         });
 
         // Asynchronously extend cache TTL (sliding window) - non-blocking
@@ -268,9 +369,68 @@ export class PostsService {
     if (cacheMissIds.length > 0) {
       try {
         const missedDocs = await postsRepository.findByIds(cacheMissIds);
+
+        // Batch fetch recent likes and comments for all missed posts
+        const [recentLikesForMissed, latestCommentsForMissed] = await Promise.all([
+          postsRepository.findRecentLikesForPosts(cacheMissIds, 5),
+          postsRepository.findLatestCommentsForPosts(cacheMissIds),
+        ]);
+
+        // Gather all user IDs of recent likers and comment authors to batch fetch their profiles
+        const missedUserIds = new Set<string>();
+        for (const pid of cacheMissIds) {
+          const likes = recentLikesForMissed[pid] || [];
+          for (const l of likes) {
+            missedUserIds.add(l.userId);
+          }
+          const comment = latestCommentsForMissed[pid];
+          if (comment) {
+            missedUserIds.add(comment.userId);
+          }
+        }
+
+        let profilesMap = new Map<string, any>();
+        if (missedUserIds.size > 0) {
+          try {
+            const profiles = await authService.getUsersByIds(Array.from(missedUserIds));
+            profilesMap = new Map(profiles.map((p) => [p.id, p]));
+          } catch (err: any) {
+            console.warn(`Failed to resolve profiles for missed users: ${err.message}`);
+          }
+        }
+
         const hydrationMulti = redis.multi();
 
         for (const doc of missedDocs) {
+          const pid = doc._id;
+
+          // Construct recentLikers list
+          const likes = recentLikesForMissed[pid] || [];
+          const recentLikers = likes.map((l) => {
+            const p = profilesMap.get(l.userId);
+            return {
+              id: l.userId,
+              name: p ? `${p.firstName} ${p.lastName}`.trim() : "Unknown User",
+              pic: p?.profilePicture || "",
+            };
+          });
+
+          // Construct recentComment DTO
+          const comment = latestCommentsForMissed[pid];
+          let recentComment = null;
+          if (comment) {
+            const p = profilesMap.get(comment.userId);
+            recentComment = {
+              userId: comment.userId,
+              firstName: p ? p.firstName : "Unknown",
+              lastName: p ? p.lastName : "User",
+              profilePicture: p?.profilePicture || "",
+              text: comment.content.length > 100
+                ? comment.content.slice(0, 100) + "..."
+                : comment.content,
+            };
+          }
+
           const postDto: IPost = {
             id: doc._id,
             userId: doc.userId,
@@ -280,11 +440,13 @@ export class PostsService {
             commentsCount: doc.commentsCount,
             createdAt: doc.createdAt,
             updatedAt: doc.updatedAt,
+            recentLikers,
+            recentComment,
           };
 
           postMap.set(postDto.id, postDto);
 
-          // Queue Redis HASH cache hydration and sliding TTL setup
+          // Pipelined hydration HSET
           const postKey = POSTS_CONSTANTS.REDIS.CACHE_KEYS.POST_DATA(postDto.id);
           hydrationMulti.hSet(postKey, {
             id: postDto.id,
@@ -295,6 +457,8 @@ export class PostsService {
             commentsCount: postDto.commentsCount.toString(),
             createdAt: postDto.createdAt.toISOString(),
             updatedAt: postDto.updatedAt.toISOString(),
+            recentLikers: JSON.stringify(postDto.recentLikers || []),
+            recentComment: postDto.recentComment ? JSON.stringify(postDto.recentComment) : "",
           });
           hydrationMulti.expire(postKey, POSTS_CONSTANTS.REDIS.TTL.POST_DATA);
         }
@@ -319,6 +483,42 @@ export class PostsService {
 
     // Populate user profile details (checking cache and fetching missed IDs from MongoDB)
     await this.populateUserDetails(posts);
+
+    // 4. Map isLiked state for all retrieved posts if requestingUserId is provided
+    if (requestingUserId && posts.length > 0) {
+      try {
+        const checkMulti = redis.multi();
+        for (const post of posts) {
+          checkMulti.exists(POSTS_CONSTANTS.REDIS.CACHE_KEYS.POST_LIKERS(post.id));
+          checkMulti.sIsMember(POSTS_CONSTANTS.REDIS.CACHE_KEYS.POST_LIKERS(post.id), requestingUserId);
+        }
+        const checkResults = await checkMulti.exec();
+
+        const missingPostIdsForLikes: string[] = [];
+        for (let i = 0; i < posts.length; i++) {
+          const post = posts[i];
+          const exists = checkResults[i * 2] as any;
+          const isMember = checkResults[i * 2 + 1] as any;
+
+          if (exists === 1 || exists === true) {
+            post.isLiked = isMember === 1 || isMember === true;
+          } else {
+            missingPostIdsForLikes.push(post.id);
+          }
+        }
+
+        if (missingPostIdsForLikes.length > 0) {
+          const likedFromDb = await postsRepository.getLikedPostIds(requestingUserId, missingPostIdsForLikes);
+          for (const post of posts) {
+            if (missingPostIdsForLikes.includes(post.id)) {
+              post.isLiked = likedFromDb.includes(post.id);
+            }
+          }
+        }
+      } catch (err: any) {
+        console.warn(`Failed to resolve isLiked state: ${err.message}`);
+      }
+    }
 
     const nextCursor =
       posts.length > 0
@@ -421,6 +621,193 @@ export class PostsService {
     }
 
     return posts;
+  }
+
+  /**
+   * Toggles a user's like on a post. Uses Redis SADD/SREM sets, increments counts,
+   * updates the recentLikers snippet list in the HASH, and emits a post-liked Kafka event.
+   * Optimized for zero database reads during the HTTP request cycle.
+   */
+  public async toggleLike(
+    postId: string, 
+    userId: string, 
+    userFirstName?: string, 
+    userLastName?: string
+  ): Promise<{ liked: boolean }> {
+    const postKey = POSTS_CONSTANTS.REDIS.CACHE_KEYS.POST_DATA(postId);
+    const likersKey = POSTS_CONSTANTS.REDIS.CACHE_KEYS.POST_LIKERS(postId);
+    const redis = getRedisClient();
+
+    try {
+      // 1. Zero DB Read Strategy: Use Redis SISMEMBER to determine if the user has already liked the post
+      const memberCheck = await redis.sIsMember(likersKey, userId) as any;
+      const isLike = !(memberCheck === 1 || memberCheck === true);
+
+      // 2. Resolve user names from token parameters and profile picture from Redis user cache
+      const userProfileName = (userFirstName && userLastName)
+        ? `${userFirstName} ${userLastName}`.trim()
+        : "Unknown User";
+
+      let userProfilePic = "";
+      try {
+        const userKey = `user:${userId}:data`;
+        const profileStr = await redis.hGet(userKey, "profile");
+        if (profileStr) {
+          const profile = JSON.parse(profileStr);
+          userProfilePic = profile.profilePicture || "";
+        }
+      } catch (redisErr: any) {
+        console.warn(`Failed to retrieve profile picture from cache: ${redisErr.message}`);
+      }
+
+      const userProfile: IPostLiker = {
+        id: userId,
+        name: userProfileName,
+        pic: userProfilePic,
+      };
+
+      // 3. Retrieve and update recent likers from the post HASH cache
+      const currentLikersJson = await redis.hGet(postKey, "recentLikers");
+      let recentLikers: IPostLiker[] = [];
+      if (currentLikersJson) {
+        try {
+          recentLikers = JSON.parse(currentLikersJson);
+        } catch {}
+      }
+
+      if (isLike) {
+        recentLikers = [userProfile, ...recentLikers.filter((u) => u.id !== userId)].slice(0, 5);
+      } else {
+        recentLikers = recentLikers.filter((u) => u.id !== userId);
+      }
+
+      // 4. Redis multi-transaction to perform operations atomically
+      const multi = redis.multi();
+      if (isLike) {
+        multi.sAdd(likersKey, userId);
+        multi.hIncrBy(postKey, "likesCount", 1);
+      } else {
+        multi.sRem(likersKey, userId);
+        multi.hIncrBy(postKey, "likesCount", -1);
+      }
+      multi.hSet(postKey, "recentLikers", JSON.stringify(recentLikers));
+      multi.expire(likersKey, POSTS_CONSTANTS.REDIS.TTL.POST_LIKERS); // 48-hour TTL
+      await multi.exec();
+
+      // 5. Asynchronous Kafka event publishing
+      await postsEvents.emitPostLiked({
+        postId,
+        userId,
+        action: isLike ? "like" : "unlike",
+      });
+
+      return { liked: isLike };
+    } catch (error: any) {
+      console.error(`Error in toggleLike transaction: ${error.message}`);
+      throw new AppError(error.message || "Failed to toggle post like", error.statusCode || 500);
+    }
+  }
+
+  /**
+   * Persists a comment in MongoDB, updates the commentsCount in Redis,
+   * updates the recentComment snippet, and emits a post-commented Kafka event.
+   */
+  public async addComment(
+    postId: string,
+    userId: string,
+    input: ICreateCommentInput,
+    userFirstName?: string,
+    userLastName?: string
+  ): Promise<IComment> {
+    const postKey = POSTS_CONSTANTS.REDIS.CACHE_KEYS.POST_DATA(postId);
+    const redis = getRedisClient();
+
+    // 1. Check if post exists via lightweight check (checking cache first, then lightweight DB exist check)
+    const postExistsInCache = await redis.exists(postKey);
+    if (!postExistsInCache) {
+      const existsInDb = await postsRepository.exists(postId);
+      if (!existsInDb) {
+        throw new AppError("Post not found", 404);
+      }
+    }
+
+    // 2. Persist comment in MongoDB comments collection synchronously
+    const commentDoc = await postsRepository.createComment({
+      postId,
+      userId,
+      content: input.content,
+      parentId: input.parentId || null,
+    });
+
+    const commentDto: IComment = {
+      id: commentDoc._id,
+      postId: commentDoc.postId,
+      userId: commentDoc.userId,
+      content: commentDoc.content,
+      parentId: commentDoc.parentId,
+      createdAt: commentDoc.createdAt,
+      updatedAt: commentDoc.updatedAt,
+    };
+
+    // Retrieve profile picture from active Redis user cache
+    let userProfilePic = "";
+    try {
+      const userKey = `user:${userId}:data`;
+      const profileStr = await redis.hGet(userKey, "profile");
+      if (profileStr) {
+        const profile = JSON.parse(profileStr);
+        userProfilePic = profile.profilePicture || "";
+      }
+    } catch {}
+
+    // 3. Format snippet of latest comment
+    const commentSnippet = {
+      userId,
+      firstName: userFirstName || "Unknown",
+      lastName: userLastName || "User",
+      profilePicture: userProfilePic,
+      text: commentDto.content.length > 100 
+        ? commentDto.content.slice(0, 100) + "..." 
+        : commentDto.content,
+    };
+
+    let recentCommentObj: any = null;
+
+    if (input.parentId) {
+      // Retrieve the current recentComment from Redis HASH
+      const currentRecentCommentStr = await redis.hGet(postKey, "recentComment");
+      if (currentRecentCommentStr) {
+        try {
+          recentCommentObj = JSON.parse(currentRecentCommentStr);
+        } catch {}
+      }
+
+      if (recentCommentObj) {
+        recentCommentObj.reply = commentSnippet;
+      } else {
+        // If parent is not cached in Redis, we just save the reply comment itself as the main recentComment snippet
+        recentCommentObj = commentSnippet;
+      }
+    } else {
+      recentCommentObj = commentSnippet;
+    }
+
+    // 4. Update counts and recent comment atomically in Redis
+    await redis.multi()
+      .hIncrBy(postKey, "commentsCount", 1)
+      .hSet(postKey, "recentComment", JSON.stringify(recentCommentObj))
+      .exec();
+
+    // 5. Emit comment event to Kafka
+    await postsEvents.emitPostCommented({
+      commentId: commentDto.id,
+      postId: commentDto.postId,
+      userId: commentDto.userId,
+      content: commentDto.content,
+      parentId: commentDto.parentId,
+    });
+
+    return commentDto;
   }
 }
 

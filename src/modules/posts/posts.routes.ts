@@ -6,6 +6,7 @@ import {
   presignedUrlSchema,
   createPostSchema,
   getPostsSchema,
+  addCommentSchema,
 } from "./posts.validation.js";
 
 const router = Router();
@@ -24,6 +25,21 @@ router.post(
   authenticate,
   validateRequest(createPostSchema),
   postsController.createPost
+);
+
+// Endpoint: Toggle like status on a post
+router.post(
+  "/:postId/like",
+  authenticate,
+  postsController.toggleLike
+);
+
+// Endpoint: Add comment or reply to a post
+router.post(
+  "/:postId/comments",
+  authenticate,
+  validateRequest(addCommentSchema),
+  postsController.addComment
 );
 
 // Endpoint: Retrieve the paginated global feed
