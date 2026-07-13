@@ -7,6 +7,8 @@ import { catchAsync } from "../utils/catchAsync.js";
 interface IDecodedToken {
   id: string;
   email: string;
+  firstName?: string;
+  lastName?: string;
   role?: string;
 }
 
@@ -25,6 +27,8 @@ export const authenticate = catchAsync(
       req.user = {
         id: decoded.id,
         email: decoded.email,
+        firstName: decoded.firstName || "",
+        lastName: decoded.lastName || "",
       };
 
       next();

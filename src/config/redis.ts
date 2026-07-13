@@ -271,6 +271,81 @@ export const connectRedis = async (): Promise<RedisClientType> => {
         }
         return false;
       },
+      exists: async (key: string) => {
+        const item = store.get(key);
+        if (!item) return 0;
+        if (item.expireAt && Date.now() > item.expireAt) {
+          store.delete(key);
+          return 0;
+        }
+        return 1;
+      },
+      hIncrBy: async (key: string, field: string, increment: number) => {
+        let data: Record<string, string> = {};
+        const item = store.get(key);
+        if (item) {
+          try {
+            data = JSON.parse(item.value);
+          } catch {}
+        }
+        const val = parseInt(data[field] || "0", 10) + increment;
+        data[field] = val.toString();
+        store.set(key, { value: JSON.stringify(data), expireAt: item?.expireAt });
+        return val;
+      },
+      sAdd: async (key: string, member: string | string[]) => {
+        const item = store.get(key);
+        let set = new Set<string>();
+        if (item) {
+          try {
+            const arr = JSON.parse(item.value);
+            if (Array.isArray(arr)) {
+              set = new Set(arr);
+            }
+          } catch {}
+        }
+        const members = Array.isArray(member) ? member : [member];
+        for (const m of members) {
+          set.add(m);
+        }
+        store.set(key, { value: JSON.stringify(Array.from(set)), expireAt: item?.expireAt });
+        return members.length;
+      },
+      sRem: async (key: string, member: string | string[]) => {
+        const item = store.get(key);
+        if (!item) return 0;
+        let set = new Set<string>();
+        try {
+          const arr = JSON.parse(item.value);
+          if (Array.isArray(arr)) {
+            set = new Set(arr);
+          }
+        } catch {}
+        const members = Array.isArray(member) ? member : [member];
+        let removed = 0;
+        for (const m of members) {
+          if (set.delete(m)) {
+            removed++;
+          }
+        }
+        store.set(key, { value: JSON.stringify(Array.from(set)), expireAt: item.expireAt });
+        return removed;
+      },
+      sIsMember: async (key: string, member: string) => {
+        const item = store.get(key);
+        if (!item) return false;
+        if (item.expireAt && Date.now() > item.expireAt) {
+          store.delete(key);
+          return false;
+        }
+        try {
+          const arr = JSON.parse(item.value);
+          if (Array.isArray(arr)) {
+            return arr.includes(member);
+          }
+        } catch {}
+        return false;
+      },
       multi: () => {
         const chain: Array<() => Promise<any>> = [];
         const builder = {
@@ -292,6 +367,18 @@ export const connectRedis = async (): Promise<RedisClientType> => {
           },
           hDel: (key: string, fields: string | string[]) => {
             chain.push(() => redisClient!.hDel(key, fields));
+            return builder;
+          },
+          hIncrBy: (key: string, field: string, increment: number) => {
+            chain.push(() => redisClient!.hIncrBy(key, field, increment));
+            return builder;
+          },
+          sAdd: (key: string, member: string) => {
+            chain.push(() => redisClient!.sAdd(key, member));
+            return builder;
+          },
+          sRem: (key: string, member: string) => {
+            chain.push(() => redisClient!.sRem(key, member));
             return builder;
           },
           exec: async () => {

@@ -6,6 +6,27 @@ export interface IPostUser {
   profilePicture?: string;
 }
 
+export interface IPostLiker {
+  id: string;
+  name: string;
+  pic?: string;
+}
+
+export interface IPostRecentComment {
+  userId: string;
+  firstName: string;
+  lastName: string;
+  profilePicture?: string;
+  text: string;
+  reply?: {
+    userId: string;
+    firstName: string;
+    lastName: string;
+    profilePicture?: string;
+    text: string;
+  } | null;
+}
+
 export interface IPost {
   id: string;
   userId: string;
@@ -16,6 +37,9 @@ export interface IPost {
   createdAt: Date;
   updatedAt: Date;
   user?: IPostUser;
+  recentLikers?: IPostLiker[];
+  recentComment?: IPostRecentComment | null;
+  isLiked?: boolean;
 }
 
 export interface IPostDocument extends Document<string> {
@@ -27,6 +51,47 @@ export interface IPostDocument extends Document<string> {
   commentsCount: number;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface ILike {
+  id: string;
+  postId: string;
+  userId: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface ILikeDocument extends Document<string> {
+  _id: string;
+  postId: string;
+  userId: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface IComment {
+  id: string;
+  postId: string;
+  userId: string;
+  content: string;
+  parentId?: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface ICommentDocument extends Document<string> {
+  _id: string;
+  postId: string;
+  userId: string;
+  content: string;
+  parentId?: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface ICreateCommentInput {
+  content: string;
+  parentId?: string;
 }
 
 export interface ICreatePostInput {

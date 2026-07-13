@@ -27,7 +27,8 @@ The codebase enforces a strict Controller-Service-Repository pattern and isolate
 - **Why**: Redis provides ultra-fast in-memory lookup capabilities, minimizing authentication validation latency, tracking active client sessions/devices, and securing refresh token metadata with native TTL expiry.
 - **Where**:
   - **User Data Hash (`user:<userId>:data`)**: Stores user profile info in a `profile` field (persisted as a JSON DTO), alongside device session mappings in separate `session:<deviceId>` fields. The key expires after 7 days matching the active session length, providing multi-device session security and preventing concurrent session write race conditions.
-  - **Post Data Hash (`post:<postId>:data`)**: Stores post metadata and media URLs with a 30-minute sliding window TTL.
+  - **Post Data Hash (`post:<postId>:data`)**: Stores post metadata and media URLs with a 30-minute sliding window TTL. Includes cached lists of recent liker profiles (`recentLikers`) and a snippet of the latest comment (`recentComment`) to enable $O(1)$ client reads.
+  - **Post Likers Set (`post:<postId>:likers`)**: A Redis Set containing user IDs who liked the post. Enforces a 48-hour TTL. Supports database-read-free like toggle using `SISMEMBER` check.
   - **Global Feed Sorted Set (`global_feed`)**: A Redis Sorted Set (ZSET) storing post IDs indexed chronologically by creation timestamp score, supporting cursor-based range query pagination.
 
 ### 2. Kafka Event Streaming (Why & Where)
@@ -37,6 +38,8 @@ The codebase enforces a strict Controller-Service-Repository pattern and isolate
   - **User Registration Event (`auth.user-registered`)**: When registration completes, the service dispatches an outbound event using `authEvents.emitUserRegistered()` and immediately returns HTTP 201 with the JWTs.
   - **Welcome Email Consumer (`src/kafka/auth.consumer.ts`)**: Executed inside the worker process, this consumer subscribes to the registration topic, processes incoming payloads, and triggers the `sendMail` utility asynchronously.
   - **Post Created Event (`posts.post-created`)**: Dispatched from the service layer upon successful database insertion and Redis caching, passing the new post meta-information for asynchronous consumer actions.
+  - **Post Liked Event (`posts.post-liked`)**: Dispatched on like/unlike toggles. The consumer worker processes them and executes MongoDB updates (insertions/deletions and `likesCount` adjustments) in batch via `bulkWrite` every 5 minutes or 10,000 likes.
+  - **Post Commented Event (`posts.post-commented`)**: Dispatched when comments are added. The consumer worker updates post comment counters asynchronously in batch via `bulkWrite` every 5 minutes or 10,000 comments.
 
 ---
 
@@ -305,18 +308,90 @@ docker-compose up --build
           "userId": "user_id_here",
           "content": "This is my first post!",
           "mediaUrls": ["https://res.cloudinary.com/demo/image/upload/v1582260278/posts/sample.png"],
-          "likesCount": 0,
-          "commentsCount": 0,
+          "likesCount": 1,
+          "commentsCount": 1,
           "createdAt": "2026-07-13T07:18:55.070Z",
           "updatedAt": "2026-07-13T07:18:55.070Z",
           "user": {
             "firstName": "John",
             "lastName": "Doe",
             "profilePicture": "https://www.gravatar.com/avatar/...?d=robohash&s=200"
-          }
+          },
+          "recentLikers": [
+            {
+              "id": "liker_user_uuid",
+              "name": "Jane Smith",
+              "pic": "https://www.gravatar.com/avatar/...&d=robohash"
+            }
+          ],
+          "recentComment": {
+            "userId": "commenter_user_uuid",
+            "firstName": "Jane",
+            "lastName": "Doe",
+            "profilePicture": "https://www.gravatar.com/avatar/...?d=robohash&s=200",
+            "text": "This is a comment!",
+            "reply": {
+              "userId": "reply_user_uuid",
+              "firstName": "Bob",
+              "lastName": "Johnson",
+              "profilePicture": "https://www.gravatar.com/avatar/...?d=robohash&s=200",
+              "text": "This is a reply comment!"
+            }
+          },
+          "isLiked": true
         }
       ],
       "nextCursor": "1783927135070"
     }
   }
   ```
+
+#### Toggle Like
+- **URL**: `/api/v1/posts/:postId/like`
+- **Method**: `POST`
+- **Headers**:
+  - `Content-Type: application/json`
+  - `Authorization: Bearer <access_token_jwt>`
+- **Success Response (200 OK)**:
+  ```json
+  {
+    "success": true,
+    "statusCode": 200,
+    "message": "Post liked successfully",
+    "data": {
+      "liked": true
+    }
+  }
+  ```
+
+#### Add Comment / Reply
+- **URL**: `/api/v1/posts/:postId/comments`
+- **Method**: `POST`
+- **Headers**:
+  - `Content-Type: application/json`
+  - `Authorization: Bearer <access_token_jwt>`
+- **Body**:
+  ```json
+  {
+    "content": "This is a comment!",
+    "parentId": null
+  }
+  ```
+- **Success Response (201 Created)**:
+  ```json
+  {
+    "success": true,
+    "statusCode": 201,
+    "message": "Comment added successfully",
+    "data": {
+      "id": "comment_uuid",
+      "postId": "post_uuid",
+      "userId": "user_uuid",
+      "content": "This is a comment!",
+      "parentId": null,
+      "createdAt": "2026-07-13T14:15:00.000Z",
+      "updatedAt": "2026-07-13T14:15:00.000Z"
+    }
+  }
+  ```
+
