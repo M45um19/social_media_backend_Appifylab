@@ -31,6 +31,10 @@ const userSchema = new Schema<IUserDocument>(
       required: [true, "Password is required"],
       select: false,
     },
+    profilePicture: {
+      type: String,
+      trim: true,
+    },
   },
   {
     timestamps: true,

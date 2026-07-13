@@ -3,11 +3,11 @@ import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import { authRepository } from "./auth.repository.js";
 import { authEvents } from "./auth.events.js";
-import { 
-  IRegisterInput, 
-  ILoginInput, 
-  IAuthResponse, 
-  IUserResponseDTO, 
+import {
+  IRegisterInput,
+  ILoginInput,
+  IAuthResponse,
+  IUserResponseDTO,
   IDeviceInfo,
   IRefreshTokenInput,
   IRefreshTokenResponse
@@ -20,6 +20,12 @@ import { sendMail } from "../../utils/sendMail.js";
 import { getWelcomeEmailTemplate } from "./auth.template.js";
 
 export class AuthService {
+  public generateGravatarUrl(email: string): string {
+    const cleanEmail = email.trim().toLowerCase();
+    const hash = crypto.createHash("md5").update(cleanEmail).digest("hex");
+    return `https://www.gravatar.com/avatar/${hash}?d=robohash&s=200`;
+  }
+
   public async register(input: IRegisterInput, deviceInfo: IDeviceInfo = {}): Promise<IAuthResponse> {
     // 1. Check for duplicate registration
     const existingUser = await authRepository.findByEmail(input.email);
@@ -27,8 +33,14 @@ export class AuthService {
       throw new AppError("Email is already registered", 409);
     }
 
+    const profilePictureUrl = this.generateGravatarUrl(input.email);
+    const registerInputWithProfilePicture = {
+      ...input,
+      profilePicture: profilePictureUrl,
+    };
+
     // 2. Create user via repository
-    const newUser = await authRepository.create(input);
+    const newUser = await authRepository.create(registerInputWithProfilePicture);
 
     // 3. Prepare User Response DTO
     const userDto: IUserResponseDTO = {
@@ -36,6 +48,7 @@ export class AuthService {
       firstName: newUser.firstName,
       lastName: newUser.lastName,
       email: newUser.email,
+      profilePicture: newUser.profilePicture,
       createdAt: newUser.createdAt,
     };
 
@@ -111,6 +124,7 @@ export class AuthService {
       firstName: user.firstName,
       lastName: user.lastName,
       email: user.email,
+      profilePicture: user.profilePicture,
       createdAt: user.createdAt,
     };
 
@@ -170,7 +184,7 @@ export class AuthService {
       const htmlContent = getWelcomeEmailTemplate(user.firstName, user.lastName);
       await sendMail({
         email: user.email,
-        subject: "Welcome to Social Media App!",
+        subject: "Welcome to Buddy Script Social Media App!",
         message: `Hello ${user.firstName} ${user.lastName},\n\nThank you for registering on our platform! We are thrilled to have you here.\n\nBest Regards,\nThe Team`,
         html: htmlContent,
       });
@@ -212,7 +226,7 @@ export class AuthService {
           await redis.hDel(userKey, `session:${deviceId}`);
           console.warn(`Removed session:${deviceId} for user:${payload.id} due to verification error.`);
         }
-      } catch {}
+      } catch { }
       throw new AppError("Invalid or expired refresh token", 401);
     }
 
@@ -279,6 +293,21 @@ export class AuthService {
       refreshToken: newRefreshToken,
       deviceId,
     };
+  }
+
+  /**
+   * Fetches multiple user profiles by their IDs in a single database batch query.
+   */
+  public async getUsersByIds(userIds: string[]): Promise<IUserResponseDTO[]> {
+    const users = await authRepository.findByIds(userIds);
+    return users.map((u) => ({
+      id: u._id.toString(),
+      firstName: u.firstName,
+      lastName: u.lastName,
+      email: u.email,
+      profilePicture: u.profilePicture,
+      createdAt: u.createdAt,
+    }));
   }
 }
 

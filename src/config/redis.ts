@@ -64,6 +64,141 @@ export const connectRedis = async (): Promise<RedisClientType> => {
       del: async (key: string) => {
         return store.delete(key) ? 1 : 0;
       },
+      zAdd: async (key: string, member: any) => {
+        let list: Array<{ score: number; value: string }> = [];
+        const item = store.get(key);
+        if (item) {
+          try {
+            list = JSON.parse(item.value);
+          } catch {}
+        }
+        const members = Array.isArray(member) ? member : [member];
+        for (const m of members) {
+          list = list.filter((x) => x.value !== m.value);
+          list.push({ score: m.score, value: m.value });
+        }
+        list.sort((a, b) => a.score - b.score);
+        store.set(key, { value: JSON.stringify(list), expireAt: item?.expireAt });
+        return members.length;
+      },
+      zRevRangeByScore: async (key: string, max: any, min: any, options?: { LIMIT?: { offset: number; count: number } }) => {
+        const item = store.get(key);
+        if (!item) return [];
+        try {
+          let list: Array<{ score: number; value: string }> = JSON.parse(item.value);
+          let maxVal = Infinity;
+          let minVal = -Infinity;
+          let maxExclusive = false;
+          let minExclusive = false;
+
+          if (typeof max === "string") {
+            if (max.startsWith("(")) {
+              maxVal = parseFloat(max.slice(1));
+              maxExclusive = true;
+            } else if (max === "+inf") {
+              maxVal = Infinity;
+            } else {
+              maxVal = parseFloat(max);
+            }
+          } else if (typeof max === "number") {
+            maxVal = max;
+          }
+
+          if (typeof min === "string") {
+            if (min.startsWith("(")) {
+              minVal = parseFloat(min.slice(1));
+              minExclusive = true;
+            } else if (min === "-inf") {
+              minVal = -Infinity;
+            } else {
+              minVal = parseFloat(min);
+            }
+          } else if (typeof min === "number") {
+            minVal = min;
+          }
+
+          list = list.filter((x) => {
+            const afterMin = minExclusive ? x.score > minVal : x.score >= minVal;
+            const beforeMax = maxExclusive ? x.score < maxVal : x.score <= maxVal;
+            return afterMin && beforeMax;
+          });
+
+          list.sort((a, b) => b.score - a.score);
+
+          if (options?.LIMIT) {
+            const { offset, count } = options.LIMIT;
+            list = list.slice(offset, offset + count);
+          }
+
+          return list.map((x) => x.value);
+        } catch {
+          return [];
+        }
+      },
+      zRange: async (key: string, minArg: any, maxArg: any, options?: { BY?: string; REV?: boolean; LIMIT?: { offset: number; count: number } }) => {
+        const item = store.get(key);
+        if (!item) return [];
+        try {
+          let min = minArg;
+          let max = maxArg;
+          if (options?.REV) {
+            min = maxArg;
+            max = minArg;
+          }
+          let list: Array<{ score: number; value: string }> = JSON.parse(item.value);
+          let maxVal = Infinity;
+          let minVal = -Infinity;
+          let maxExclusive = false;
+          let minExclusive = false;
+
+          if (typeof max === "string") {
+            if (max.startsWith("(")) {
+              maxVal = parseFloat(max.slice(1));
+              maxExclusive = true;
+            } else if (max === "+inf") {
+              maxVal = Infinity;
+            } else {
+              maxVal = parseFloat(max);
+            }
+          } else if (typeof max === "number") {
+            maxVal = max;
+          }
+
+          if (typeof min === "string") {
+            if (min.startsWith("(")) {
+              minVal = parseFloat(min.slice(1));
+              minExclusive = true;
+            } else if (min === "-inf") {
+              minVal = -Infinity;
+            } else {
+              minVal = parseFloat(min);
+            }
+          } else if (typeof min === "number") {
+            minVal = min;
+          }
+
+          list = list.filter((x) => {
+            const afterMin = minExclusive ? x.score > minVal : x.score >= minVal;
+            const beforeMax = maxExclusive ? x.score < maxVal : x.score <= maxVal;
+            return afterMin && beforeMax;
+          });
+
+          if (options?.REV) {
+            list.sort((a, b) => b.score - a.score);
+          } else {
+            list.sort((a, b) => a.score - b.score);
+          }
+
+          if (options?.LIMIT) {
+            const { offset, count } = options.LIMIT;
+            list = list.slice(offset, offset + count);
+          }
+
+          return list.map((x) => x.value);
+        } catch {
+          return [];
+        }
+      },
       hSet: async (key: string, field: any, value?: any) => {
         let data: Record<string, string> = {};
         const item = store.get(key);
@@ -141,6 +276,14 @@ export const connectRedis = async (): Promise<RedisClientType> => {
         const builder = {
           hSet: (key: string, field: any, value?: any) => {
             chain.push(() => redisClient!.hSet(key, field, value));
+            return builder;
+          },
+          hGetAll: (key: string) => {
+            chain.push(() => redisClient!.hGetAll(key));
+            return builder;
+          },
+          hGet: (key: string, field: string) => {
+            chain.push(() => redisClient!.hGet(key, field));
             return builder;
           },
           expire: (key: string, seconds: number) => {
