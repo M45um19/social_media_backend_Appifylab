@@ -17,6 +17,10 @@ export class AuthRepository {
   public async findById(id: string): Promise<IUserDocument | null> {
     return await User.findById(id);
   }
+
+  public async findByIds(ids: string[]): Promise<IUserDocument[]> {
+    return await User.find({ _id: { $in: ids } });
+  }
 }
 
 export const authRepository = new AuthRepository();

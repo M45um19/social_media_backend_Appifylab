@@ -5,6 +5,7 @@ export interface IUser {
   lastName: string;
   email: string;
   password?: string;
+  profilePicture?: string;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -18,6 +19,7 @@ export interface IRegisterInput {
   lastName: string;
   email: string;
   password?: string;
+  profilePicture?: string;
 }
 
 export interface ILoginInput {
@@ -30,6 +32,7 @@ export interface IUserResponseDTO {
   firstName: string;
   lastName: string;
   email: string;
+  profilePicture?: string;
   createdAt?: Date;
 }
 

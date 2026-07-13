@@ -3,6 +3,7 @@ export const AUTH_CONSTANTS = {
     TOPICS: {
       USER_REGISTERED: "auth.user-registered",
     },
+    CLIENT_ID: "auth-service",
     CONSUMER_GROUP_ID: "auth-group",
   },
   REDIS: {
