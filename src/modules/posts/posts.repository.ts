@@ -65,6 +65,10 @@ export class PostsRepository {
     return map;
   }
 
+  public async findAllLikesForPosts(postIds: string[]): Promise<ILikeDocument[]> {
+    return await Like.find({ postId: { $in: postIds } }).select("postId userId");
+  }
+
   // --- Comments Repository Methods ---
 
   public async createComment(input: {

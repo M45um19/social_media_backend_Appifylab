@@ -149,11 +149,21 @@ export class PostsService {
         let isLiked = false;
         if (requestingUserId) {
           const likersKey = POSTS_CONSTANTS.REDIS.CACHE_KEYS.POST_LIKERS(postId);
-          if (await redis.exists(likersKey)) {
+          const hasLikersKey = await redis.exists(likersKey);
+          if (hasLikersKey) {
             const memberCheck = await redis.sIsMember(likersKey, requestingUserId) as any;
             isLiked = memberCheck === 1 || memberCheck === true;
           } else {
-            isLiked = await postsRepository.hasUserLiked(postId, requestingUserId);
+            // Self-healing: fetch all likes and populate Redis cache
+            const allLikesDocs = await postsRepository.findAllLikesForPosts([postId]);
+            const likerIds = allLikesDocs.map((l) => l.userId);
+            if (likerIds.length > 0) {
+              await redis.sAdd(likersKey, likerIds);
+            } else {
+              await redis.sAdd(likersKey, "_empty_");
+            }
+            await redis.expire(likersKey, POSTS_CONSTANTS.REDIS.TTL.POST_LIKERS);
+            isLiked = likerIds.includes(requestingUserId);
           }
         }
 
@@ -181,10 +191,11 @@ export class PostsService {
       return null;
     }
 
-    // Fetch recent likes (last 5) and latest comment
-    const [recentLikesDocs, latestCommentDoc] = await Promise.all([
+    // Fetch recent likes (last 5), latest comment, and all likes for POST_LIKERS hydration
+    const [recentLikesDocs, latestCommentDoc, allLikesDocs] = await Promise.all([
       postsRepository.findRecentLikes(postId, 5),
       postsRepository.findLatestComment(postId),
+      postsRepository.findAllLikesForPosts([postId]),
     ]);
 
     const likerIds = recentLikesDocs.map((l) => l.userId);
@@ -227,10 +238,8 @@ export class PostsService {
       };
     }
 
-    let isLiked = false;
-    if (requestingUserId) {
-      isLiked = await postsRepository.hasUserLiked(postId, requestingUserId);
-    }
+    const allLikerIds = allLikesDocs.map((l) => l.userId);
+    const isLiked = requestingUserId ? allLikerIds.includes(requestingUserId) : false;
 
     const postDto: IPost = {
       id: postDoc._id,
@@ -248,7 +257,8 @@ export class PostsService {
 
     // Hydrate cache
     try {
-      await redis.hSet(postKey, {
+      const hydrationMulti = redis.multi();
+      hydrationMulti.hSet(postKey, {
         id: postDto.id,
         userId: postDto.userId,
         content: postDto.content || "",
@@ -260,7 +270,17 @@ export class PostsService {
         recentLikers: JSON.stringify(postDto.recentLikers || []),
         recentComment: postDto.recentComment ? JSON.stringify(postDto.recentComment) : "",
       });
-      await redis.expire(postKey, POSTS_CONSTANTS.REDIS.TTL.POST_DATA);
+      hydrationMulti.expire(postKey, POSTS_CONSTANTS.REDIS.TTL.POST_DATA);
+
+      const likersKey = POSTS_CONSTANTS.REDIS.CACHE_KEYS.POST_LIKERS(postId);
+      if (allLikerIds.length > 0) {
+        hydrationMulti.sAdd(likersKey, allLikerIds);
+      } else {
+        hydrationMulti.sAdd(likersKey, "_empty_");
+      }
+      hydrationMulti.expire(likersKey, POSTS_CONSTANTS.REDIS.TTL.POST_LIKERS);
+
+      await hydrationMulti.exec();
     } catch (redisError: any) {
       console.warn(`Redis hydration warning for post ID ${postId}: ${redisError.message}`);
     }
@@ -370,10 +390,11 @@ export class PostsService {
       try {
         const missedDocs = await postsRepository.findByIds(cacheMissIds);
 
-        // Batch fetch recent likes and comments for all missed posts
-        const [recentLikesForMissed, latestCommentsForMissed] = await Promise.all([
+        // Batch fetch recent likes, latest comments, and all likes (for POST_LIKERS cache) for all missed posts
+        const [recentLikesForMissed, latestCommentsForMissed, allLikesForMissed] = await Promise.all([
           postsRepository.findRecentLikesForPosts(cacheMissIds, 5),
           postsRepository.findLatestCommentsForPosts(cacheMissIds),
+          postsRepository.findAllLikesForPosts(cacheMissIds),
         ]);
 
         // Gather all user IDs of recent likers and comment authors to batch fetch their profiles
@@ -461,6 +482,20 @@ export class PostsService {
             recentComment: postDto.recentComment ? JSON.stringify(postDto.recentComment) : "",
           });
           hydrationMulti.expire(postKey, POSTS_CONSTANTS.REDIS.TTL.POST_DATA);
+
+          // Pipelined hydration SADD/expire for POST_LIKERS
+          const postLikersKey = POSTS_CONSTANTS.REDIS.CACHE_KEYS.POST_LIKERS(postDto.id);
+          const likerIdsForPost = allLikesForMissed
+            .filter((l) => l.postId === postDto.id)
+            .map((l) => l.userId);
+
+          if (likerIdsForPost.length > 0) {
+            hydrationMulti.sAdd(postLikersKey, likerIdsForPost);
+          } else {
+            // Cache empty set to prevent cache penetration / N+1 DB query fallback
+            hydrationMulti.sAdd(postLikersKey, "_empty_");
+          }
+          hydrationMulti.expire(postLikersKey, POSTS_CONSTANTS.REDIS.TTL.POST_LIKERS);
         }
 
         // Execute batch cache hydration for all resolved cache misses
@@ -508,10 +543,26 @@ export class PostsService {
         }
 
         if (missingPostIdsForLikes.length > 0) {
-          const likedFromDb = await postsRepository.getLikedPostIds(requestingUserId, missingPostIdsForLikes);
+          // Batch fetch all likes for the missing post IDs to hydrate the POST_LIKERS cache
+          const missingLikes = await postsRepository.findAllLikesForPosts(missingPostIdsForLikes);
+          
+          const missingHydrationMulti = redis.multi();
+          for (const postId of missingPostIdsForLikes) {
+            const postLikersKey = POSTS_CONSTANTS.REDIS.CACHE_KEYS.POST_LIKERS(postId);
+            const likerIds = missingLikes.filter((l) => l.postId === postId).map((l) => l.userId);
+            
+            if (likerIds.length > 0) {
+              missingHydrationMulti.sAdd(postLikersKey, likerIds);
+            } else {
+              missingHydrationMulti.sAdd(postLikersKey, "_empty_");
+            }
+            missingHydrationMulti.expire(postLikersKey, POSTS_CONSTANTS.REDIS.TTL.POST_LIKERS);
+          }
+          await missingHydrationMulti.exec();
+
           for (const post of posts) {
             if (missingPostIdsForLikes.includes(post.id)) {
-              post.isLiked = likedFromDb.includes(post.id);
+              post.isLiked = missingLikes.some((l) => l.postId === post.id && l.userId === requestingUserId);
             }
           }
         }

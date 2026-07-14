@@ -1,12 +1,27 @@
-import { Kafka, Producer } from "kafkajs";
+import { Kafka, KafkaConfig, Producer } from "kafkajs";
 import { env } from "./env.js";
 
-const brokers = env.KAFKA_BROKERS ? env.KAFKA_BROKERS.split(",") : ["127.0.0.1:9092"];
+const brokers = env.KAFKA_SERVICE_URI
+  ? [env.KAFKA_SERVICE_URI]
+  : (env.KAFKA_BROKERS ? env.KAFKA_BROKERS.split(",") : ["127.0.0.1:9092"]);
 
-export const kafka = new Kafka({
+const kafkaConfig: KafkaConfig = {
   clientId: env.KAFKA_CLIENT_ID,
   brokers,
-});
+};
+
+if (env.KAFKA_USER && env.KAFKA_PASSWORD) {
+  kafkaConfig.ssl = {
+    rejectUnauthorized: false,
+  };
+  kafkaConfig.sasl = {
+    mechanism: "scram-sha-256",
+    username: env.KAFKA_USER,
+    password: env.KAFKA_PASSWORD,
+  };
+}
+
+export const kafka = new Kafka(kafkaConfig);
 
 export const waitForKafka = async (retries = 10, delayMs = 3000): Promise<boolean> => {
   const admin = kafka.admin();
